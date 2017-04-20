@@ -1,0 +1,61 @@
+from django import forms
+from django.conf import settings
+from tag.models import Tag
+from .models import Article
+from .tools import delete_no_article_tag, get_field_attrs
+import datetime
+
+class MyTagField(forms.MultipleChoiceField):
+    widget = forms.TextInput(get_field_attrs('Tags'))
+
+    def clean(self, value):
+        return value
+
+
+class ArticleForm(forms.ModelForm):
+    tag_list = MyTagField(required=False)
+
+    class Meta:
+        model = Article
+        fields = ('title', 'background', 'input_date','tag_list', 'description', 'raw_content',)
+        widgets = {
+            'title': forms.TextInput(get_field_attrs('Title')),
+            'background': forms.TextInput(get_field_attrs('Background Url, default {}'.format(
+                settings.CLEAN_BLOG_CONFIG.get('SITE_ARTICLE_BACKGROUND')))),
+            'input_date':forms.TextInput(get_field_attrs('Set Article Date, Format:1990-12-07')),
+            'description': forms.TextInput(get_field_attrs('Description')),
+            'raw_content': forms.Textarea(get_field_attrs('Markdown Content', textarea=True)),
+        }
+        print widgets
+
+    def __init__(self, *args, **kwargs):
+        super(ArticleForm, self).__init__(*args, **kwargs)
+        self.initial['tag_list'] = ','.join([t.name for t in Tag.objects.filter(article=self.instance).all()])
+        self.fields['background'].required = False
+        self.fields['input_date'].required = False
+
+    def clean_tag_list(self):
+        tags = self.cleaned_data.get('tag_list') or []
+        if tags:
+            if ' ' in tags:
+                raise forms.ValidationError('multi tag like "python,django"(Cannot contain Spaces)')
+            return tags.split(',')
+        return tags
+
+    def save(self, commit=True):
+        article = super(ArticleForm, self).save()
+        tags = self.cleaned_data.get('tag_list')
+        if tags:
+            remove_tags = [t for t in article.tags.all() if t.name not in tags]
+            article.tags.remove(*remove_tags)
+            delete_no_article_tag(remove_tags)
+            for item in tags:
+                tag = Tag.objects.filter(name=item).first()
+                if not tag:
+                    tag = Tag.objects.create(name=item)
+                article.tags.add(tag)
+        else:
+            remove_tags = article.tags.all()
+            article.tags.remove(*remove_tags)  # remove all tags, if tag_list is empty
+            delete_no_article_tag(remove_tags)
+        return article
